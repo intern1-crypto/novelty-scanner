@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>ノベルティスキャナー</title>
+<script src="https://unpkg.com/@zxing/library@latest/umd/index.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', sans-serif;
+    background: #0f172a; color: #f1f5f9;
+    min-height: 100dvh; display: flex; flex-direction: column;
+    align-items: center; padding: 16px; gap: 16px;
+  }
+  h1 { font-size: 18px; font-weight: 600; color: #94a3b8; margin-top: 8px; }
+  #video-wrap {
+    width: 100%; max-width: 380px; aspect-ratio: 1;
+    border-radius: 16px; overflow: hidden; position: relative;
+    border: 2px solid #334155;
+  }
+  video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  #overlay {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .scan-box {
+    width: 60%; aspect-ratio: 1;
+    border: 2px solid #38bdf8;
+    border-radius: 8px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+  }
+  #result-box {
+    width: 100%; max-width: 380px;
+    background: #1e293b; border-radius: 12px; padding: 16px;
+    border: 1px solid #334155; min-height: 100px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
+  .value { font-size: 20px; font-weight: 700; color: #f8fafc; }
+  .sub   { font-size: 14px; color: #94a3b8; }
+  #status {
+    font-size: 14px; padding: 8px 16px; border-radius: 8px;
+    font-weight: 600; text-align: center; width: 100%; max-width: 380px;
+  }
+  .status-ok      { background: #064e3b; color: #6ee7b7; }
+  .status-error   { background: #450a0a; color: #fca5a5; }
+  .status-waiting { background: #1e293b; color: #64748b; }
+  #cooldown-bar { height: 4px; background: #1e293b; border-radius: 2px; width: 100%; max-width: 380px; }
+  #cooldown-fill { height: 100%; background: #38bdf8; border-radius: 2px; width: 0%; transition: width 0.1s linear; }
+</style>
+</head>
+<body>
+<h1>📦 ノベルティスキャナー</h1>
+
+<div id="video-wrap">
+  <video id="video" playsinline muted></video>
+  <div id="overlay"><div class="scan-box"></div></div>
+</div>
+
+<div id="cooldown-bar"><div id="cooldown-fill"></div></div>
+
+<div id="result-box">
+  <div class="label">スキャン結果</div>
+  <div class="value" id="store-name">—</div>
+  <div class="sub"  id="store-info">QRコードをかざしてください</div>
+  <div class="sub"  id="count-info"></div>
+</div>
+
+<div id="status" class="status-waiting">待機中...</div>
+
+<script>
+  const GAS_URL = 'https://script.google.com/a/macros/enrission.jp/s/AKfycbztpNfvKenLNEOEXyjDPCNjk5jAk8seC6VxLmcV948t9u1Jg5uiO8qL8e0abm8pYu0j/exec';
+
+  const COOLDOWN_MS = 2500;
+  let lastScan = 0;
+  let scanning = true;
+
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+
+  const constraints = {
+    video: {
+      facingMode: { ideal: 'environment' },
+      width: { ideal: 1280 },
+      height: { ideal: 720 }
+    }
+  };
+
+  navigator.mediaDevices.getUserMedia(constraints)
+    .then(stream => {
+      document.getElementById('video').srcObject = stream;
+      document.getElementById('video').play();
+      codeReader.decodeFromStream(stream, 'video', (result, err) => {
+        if (!result) return;
+        const now = Date.now();
+        if (!scanning || now - lastScan < COOLDOWN_MS) return;
+        lastScan = now;
+        scanning = false;
+        sendToGAS(result.getText());
+        startCooldown();
+      });
+    })
+    .catch(err => {
+      setStatus('⚠ カメラが使えません: ' + err.message, 'error');
+    });
+
+  // JSONP方式でGASに送信（CORS回避）
+  function sendToGAS(qr) {
+    setStatus('送信中...', '');
+    const callbackName = 'cb_' + Date.now();
+    window[callbackName] = function(data) {
+      document.getElementById('cb-script') && document.getElementById('cb-script').remove();
+      if (data.ok) {
+        document.getElementById('store-name').textContent = data.storeName;
+        document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + '　店舗番号: ' + data.storeNo;
+        document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
+        setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
+        navigator.vibrate && navigator.vibrate(80);
+      } else {
+        setStatus('⚠ エラー: ' + data.error, 'error');
+      }
+      delete window[callbackName];
+    };
+    const script = document.createElement('script');
+    script.id  = 'cb-script';
+    script.src = GAS_URL + '?callback=' + callbackName + '&qr=' + encodeURIComponent(qr);
+    script.onerror = () => setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
+    document.body.appendChild(script);
+  }
+
+  function setStatus(msg, type) {
+    const el = document.getElementById('status');
+    el.textContent = msg;
+    el.className = 'status-' + (type || 'waiting');
+  }
+
+  function startCooldown() {
+    const fill = document.getElementById('cooldown-fill');
+    const start = Date.now();
+    fill.style.width = '100%';
+    const t = setInterval(() => {
+      const elapsed = Date.now() - start;
+      const pct = Math.max(0, 100 - (elapsed / COOLDOWN_MS * 100));
+      fill.style.width = pct + '%';
+      if (elapsed >= COOLDOWN_MS) {
+        clearInterval(t);
+        scanning = true;
+        fill.style.width = '0%';
+      }
+    }, 50);
+  }
+</script>
+</body>
+</html>
