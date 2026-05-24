@@ -48,7 +48,7 @@
   .status-error   { background: #450a0a; color: #fca5a5; }
   .status-waiting { background: #1e293b; color: #64748b; }
 
-  /* 新設：次のスキャンに進むための大きなボタン */
+  /* 次のスキャンに進むための大きなボタン */
   #next-btn {
     width: 100%; max-width: 380px;
     padding: 16px; border-radius: 12px;
@@ -70,7 +70,6 @@
   <div id="overlay"><div class="scan-box"></div></div>
 </div>
 
-<!-- クールダウンバーを廃止し、完了ボタンを新設 -->
 <button id="next-btn">次のお客様のスキャンを開始</button>
 
 <div id="result-box">
@@ -83,7 +82,8 @@
 <div id="status" class="status-waiting">待機中...</div>
 
 <script>
-  const GAS_URL = 'https://script.google.com/a/macros/enrission.jp/s/AKfycbztpNfvKenLNEOEXyjDPCNjk5jAk8seC6VxLmcV948t9u1Jg5uiO8qL8e0abm8pYu0j/exec';
+  // 新しいGASのURLに更新済み
+  const GAS_URL = 'https://script.google.com/a/macros/enrission.jp/s/AKfycbxJMReuZoL0nchJVB9-wp5B1RM8Glycz-oDFYVl74DfA25nBn6rJDb56WXOTzBLIQ/exec';
   let scanning = true;
   const codeReader = new ZXing.BrowserMultiFormatReader();
 
@@ -142,7 +142,6 @@
         document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
         setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
         
-        // 【追加】音を鳴らし、バイブを震わせる
         playBeep();
         navigator.vibrate && navigator.vibrate(80);
       } else {
