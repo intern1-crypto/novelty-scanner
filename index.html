@@ -41,14 +41,25 @@
   .value { font-size: 20px; font-weight: 700; color: #f8fafc; }
   .sub   { font-size: 14px; color: #94a3b8; }
   #status {
-    font-size: 14px; padding: 8px 16px; border-radius: 8px;
+    font-size: 14px; padding: 12px 16px; border-radius: 8px;
     font-weight: 600; text-align: center; width: 100%; max-width: 380px;
   }
   .status-ok      { background: #064e3b; color: #6ee7b7; }
   .status-error   { background: #450a0a; color: #fca5a5; }
   .status-waiting { background: #1e293b; color: #64748b; }
-  #cooldown-bar { height: 4px; background: #1e293b; border-radius: 2px; width: 100%; max-width: 380px; }
-  #cooldown-fill { height: 100%; background: #38bdf8; border-radius: 2px; width: 0%; transition: width 0.1s linear; }
+
+  /* 新設：次のスキャンに進むための大きなボタン */
+  #next-btn {
+    width: 100%; max-width: 380px;
+    padding: 16px; border-radius: 12px;
+    background: #38bdf8; color: #0f172a;
+    font-size: 16px; font-weight: 700;
+    border: none; cursor: pointer;
+    display: none; /* スキャン成功時のみJavaScriptで表示 */
+    box-shadow: 0 4px 14px rgba(56, 189, 248, 0.4);
+    transition: transform 0.1s ease;
+  }
+  #next-btn:active { transform: scale(0.98); }
 </style>
 </head>
 <body>
@@ -59,7 +70,8 @@
   <div id="overlay"><div class="scan-box"></div></div>
 </div>
 
-<div id="cooldown-bar"><div id="cooldown-fill"></div></div>
+<!-- クールダウンバーを廃止し、完了ボタンを新設 -->
+<button id="next-btn">次のお客様のスキャンを開始</button>
 
 <div id="result-box">
   <div class="label">スキャン結果</div>
@@ -72,12 +84,26 @@
 
 <script>
   const GAS_URL = 'https://script.google.com/a/macros/enrission.jp/s/AKfycbztpNfvKenLNEOEXyjDPCNjk5jAk8seC6VxLmcV948t9u1Jg5uiO8qL8e0abm8pYu0j/exec';
-
-  const COOLDOWN_MS = 2500;
-  let lastScan = 0;
   let scanning = true;
-
   const codeReader = new ZXing.BrowserMultiFormatReader();
+
+  // ブラウザで「ピピッ」という電子音を合成して鳴らす関数
+  function playBeep() {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime); // 音の高さ (1000Hz)
+      gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);       // 音量 (5%)
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + 0.08); // 音の長さ (0.08秒)
+    } catch (e) {
+      console.error('Audio error:', e);
+    }
+  }
 
   const constraints = {
     video: {
@@ -93,62 +119,69 @@
       document.getElementById('video').play();
       codeReader.decodeFromStream(stream, 'video', (result, err) => {
         if (!result) return;
-        const now = Date.now();
-        if (!scanning || now - lastScan < COOLDOWN_MS) return;
-        lastScan = now;
-        scanning = false;
+        if (!scanning) return; // ボタンが押されるまで次のQRは100%無視する（重複防止）
+        
+        scanning = false; // 即座にスキャンをロック
         sendToGAS(result.getText());
-        startCooldown();
       });
     })
     .catch(err => {
       setStatus('⚠ カメラが使えません: ' + err.message, 'error');
     });
 
-  // JSONP方式でGASに送信（CORS回避）
+  // JSONP方式でGASに送信
   function sendToGAS(qr) {
     setStatus('送信中...', '');
     const callbackName = 'cb_' + Date.now();
     window[callbackName] = function(data) {
       document.getElementById('cb-script') && document.getElementById('cb-script').remove();
+      
       if (data.ok) {
         document.getElementById('store-name').textContent = data.storeName;
-        document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + '　店舗番号: ' + data.storeNo;
+        document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + ' 店舗番号: ' + data.storeNo;
         document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
         setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
+        
+        // 【追加】音を鳴らし、バイブを震わせる
+        playBeep();
         navigator.vibrate && navigator.vibrate(80);
       } else {
         setStatus('⚠ エラー: ' + data.error, 'error');
       }
+      
+      // 成功・失敗に関わらず、処理が終わったら「次へ進む」ボタンを表示してスタッフの操作を待つ
+      document.getElementById('next-btn').style.display = 'block';
       delete window[callbackName];
     };
+    
     const script = document.createElement('script');
     script.id  = 'cb-script';
     script.src = GAS_URL + '?callback=' + callbackName + '&qr=' + encodeURIComponent(qr);
-    script.onerror = () => setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
+    script.onerror = () => {
+      setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
+      document.getElementById('next-btn').style.display = 'block';
+    };
     document.body.appendChild(script);
   }
+
+  // 「次のお客様のスキャンを開始」ボタンが押された時の処理
+  document.getElementById('next-btn').onclick = function() {
+    this.style.display = 'none'; // ボタンを隠す
+    
+    // 画面の表示を初期状態に戻す
+    document.getElementById('store-name').textContent = '—';
+    document.getElementById('store-info').textContent = 'QRコードをかざしてください';
+    document.getElementById('count-info').textContent = '';
+    setStatus('待機中...', 'waiting');
+    
+    // スキャンロックを解除し、次の読み取りを再開する
+    scanning = true;
+  };
 
   function setStatus(msg, type) {
     const el = document.getElementById('status');
     el.textContent = msg;
     el.className = 'status-' + (type || 'waiting');
-  }
-
-  function startCooldown() {
-    const fill = document.getElementById('cooldown-fill');
-    const start = Date.now();
-    fill.style.width = '100%';
-    const t = setInterval(() => {
-      const elapsed = Date.now() - start;
-      const pct = Math.max(0, 100 - (elapsed / COOLDOWN_MS * 100));
-      fill.style.width = pct + '%';
-      if (elapsed >= COOLDOWN_MS) {
-        clearInterval(t);
-        scanning = true;
-        fill.style.width = '0%';
-      }
-    }, 50);
   }
 </script>
 </body>
