@@ -48,14 +48,13 @@
   .status-error   { background: #450a0a; color: #fca5a5; }
   .status-waiting { background: #1e293b; color: #64748b; }
 
-  /* 次のスキャンに進むための大きなボタン */
   #next-btn {
     width: 100%; max-width: 380px;
     padding: 16px; border-radius: 12px;
     background: #38bdf8; color: #0f172a;
     font-size: 16px; font-weight: 700;
     border: none; cursor: pointer;
-    display: none; /* スキャン成功時のみJavaScriptで表示 */
+    display: none;
     box-shadow: 0 4px 14px rgba(56, 189, 248, 0.4);
     transition: transform 0.1s ease;
   }
@@ -82,12 +81,10 @@
 <div id="status" class="status-waiting">待機中...</div>
 
 <script>
-  // 新しいGASのURLに更新済み
   const GAS_URL = 'https://script.google.com/macros/s/AKfycbw2I75LTYHglXUIaKoeh2k5vI37FjuLQcZwvogxZUy8ED0m70aZSRoV020eWZvEDXig/exec';
   let scanning = true;
   const codeReader = new ZXing.BrowserMultiFormatReader();
 
-  // ブラウザで「ピピッ」という電子音を合成して鳴らす関数
   function playBeep() {
     try {
       const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -96,10 +93,10 @@
       oscillator.connect(gainNode);
       gainNode.connect(audioCtx.destination);
       oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime); // 音の高さ (1000Hz)
-      gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);       // 音量 (5%)
+      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
+      gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
       oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.08); // 音の長さ (0.08秒)
+      oscillator.stop(audioCtx.currentTime + 0.08);
     } catch (e) {
       console.error('Audio error:', e);
     }
@@ -119,9 +116,9 @@
       document.getElementById('video').play();
       codeReader.decodeFromStream(stream, 'video', (result, err) => {
         if (!result) return;
-        if (!scanning) return; // ボタンが押されるまで次のQRは100%無視する（重複防止）
+        if (!scanning) return;
         
-        scanning = false; // 即座にスキャンをロック
+        scanning = false;
         sendToGAS(result.getText());
       });
     })
@@ -129,51 +126,49 @@
       setStatus('⚠ カメラが使えません: ' + err.message, 'error');
     });
 
-  // JSONP方式でGASに送信
+  // 【修正】モダンなFetch APIを使用するように変更（Chrome対策）
   function sendToGAS(qr) {
     setStatus('送信中...', '');
-    const callbackName = 'cb_' + Date.now();
-    window[callbackName] = function(data) {
-      document.getElementById('cb-script') && document.getElementById('cb-script').remove();
-      
-      if (data.ok) {
-        document.getElementById('store-name').textContent = data.storeName;
-        document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + ' 店舗番号: ' + data.storeNo;
-        document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
-        setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
-        
-        playBeep();
-        navigator.vibrate && navigator.vibrate(80);
-      } else {
-        setStatus('⚠ エラー: ' + data.error, 'error');
-      }
-      
-      // 成功・失敗に関わらず、処理が終わったら「次へ進む」ボタンを表示してスタッフの操作を待つ
-      document.getElementById('next-btn').style.display = 'block';
-      delete window[callbackName];
-    };
-    
-    const script = document.createElement('script');
-    script.id  = 'cb-script';
-    script.src = GAS_URL + '?callback=' + callbackName + '&qr=' + encodeURIComponent(qr);
-    script.onerror = () => {
-      setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
-      document.getElementById('next-btn').style.display = 'block';
-    };
-    document.body.appendChild(script);
+
+    // URLパラメーターにQRデータだけを付与して送信（callbackは使わない）
+    const targetUrl = GAS_URL + '?qr=' + encodeURIComponent(qr);
+
+    fetch(targetUrl)
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('ネットワークエラー');
+        }
+        return response.json(); // GASから返ってくるJSONを解析
+      })
+      .then(data => {
+        if (data.ok) {
+          document.getElementById('store-name').textContent = data.storeName;
+          document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + ' 店舗番号: ' + data.storeNo;
+          document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
+          setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
+          
+          playBeep();
+          navigator.vibrate && navigator.vibrate(80);
+        } else {
+          setStatus('⚠ エラー: ' + data.error, 'error');
+        }
+        document.getElementById('next-btn').style.display = 'block';
+      })
+      .catch(error => {
+        console.error('通信エラー詳細:', error);
+        setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
+        document.getElementById('next-btn').style.display = 'block';
+      });
   }
 
-  // 「次のお客様のスキャンを開始」ボタンが押された時の処理
   document.getElementById('next-btn').onclick = function() {
-    this.style.display = 'none'; // ボタンを隠す
+    this.style.display = 'none';
     
-    // 画面の表示を初期状態に戻す
     document.getElementById('store-name').textContent = '—';
     document.getElementById('store-info').textContent = 'QRコードをかざしてください';
     document.getElementById('count-info').textContent = '';
     setStatus('待機中...', 'waiting');
     
-    // スキャンロックを解除し、次の読み取りを再開する
     scanning = true;
   };
 
