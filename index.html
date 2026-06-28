@@ -27,10 +27,11 @@
   }
   .scan-box {
     width: 60%; aspect-ratio: 1;
-    border: 2px solid #38bdf8;
-    border-radius: 8px;
+    border: 2px solid #38bdf8; border-radius: 8px;
     box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
   }
+  #video-wrap.paused .scan-box { border-color: #475569; }
+
   #result-box {
     width: 100%; max-width: 380px;
     background: #1e293b; border-radius: 12px; padding: 16px;
@@ -38,7 +39,7 @@
     display: flex; flex-direction: column; gap: 8px;
   }
   .label { font-size: 11px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; }
-  .value { font-size: 20px; font-weight: 700; color: #f8fafc; }
+  .value { font-size: 22px; font-weight: 700; color: #f8fafc; }
   .sub   { font-size: 14px; color: #94a3b8; }
   #status {
     font-size: 14px; padding: 12px 16px; border-radius: 8px;
@@ -47,18 +48,19 @@
   .status-ok      { background: #064e3b; color: #6ee7b7; }
   .status-error   { background: #450a0a; color: #fca5a5; }
   .status-waiting { background: #1e293b; color: #64748b; }
+  .status-confirm { background: #422006; color: #fcd34d; }
 
-  #next-btn {
-    width: 100%; max-width: 380px;
-    padding: 16px; border-radius: 12px;
-    background: #38bdf8; color: #0f172a;
-    font-size: 16px; font-weight: 700;
-    border: none; cursor: pointer;
-    display: none;
-    box-shadow: 0 4px 14px rgba(56, 189, 248, 0.4);
+  .btn-area { width: 100%; max-width: 380px; display: flex; flex-direction: column; gap: 10px; }
+  .btn {
+    width: 100%; padding: 16px; border-radius: 12px;
+    font-size: 16px; font-weight: 700; border: none; cursor: pointer;
     transition: transform 0.1s ease;
   }
-  #next-btn:active { transform: scale(0.98); }
+  .btn:active { transform: scale(0.98); }
+  .btn-confirm   { background: #22c55e; color: #052e16; box-shadow: 0 4px 14px rgba(34,197,94,0.4); }
+  .btn-primary   { background: #38bdf8; color: #0f172a; box-shadow: 0 4px 14px rgba(56,189,248,0.4); }
+  .btn-secondary { background: #1e293b; color: #94a3b8; border: 1px solid #334155; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -69,8 +71,6 @@
   <div id="overlay"><div class="scan-box"></div></div>
 </div>
 
-<button id="next-btn">次のお客様のスキャンを開始</button>
-
 <div id="result-box">
   <div class="label">スキャン結果</div>
   <div class="value" id="store-name">—</div>
@@ -80,103 +80,136 @@
 
 <div id="status" class="status-waiting">待機中...</div>
 
+<div class="btn-area">
+  <button id="confirm-btn" class="btn btn-confirm hidden">✓ この内容で記録する</button>
+  <button id="retry-btn"   class="btn btn-primary hidden">🔄 もう一度送信する</button>
+  <button id="rescan-btn"  class="btn btn-secondary hidden">やり直す（記録しない）</button>
+  <button id="next-btn"    class="btn btn-primary hidden">次のお客様をスキャン</button>
+</div>
+
 <script>
   const GAS_URL = 'https://script.google.com/macros/s/AKfycbw2I75LTYHglXUIaKoeh2k5vI37FjuLQcZwvogxZUy8ED0m70aZSRoV020eWZvEDXig/exec';
-  let scanning = true;
-  const codeReader = new ZXing.BrowserMultiFormatReader();
 
-  function playBeep() {
+  let scanning  = true;   // カメラがQRを処理してよいか
+  let pendingQR = null;   // 確認待ちのQR文字列
+
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+  const $ = (id) => document.getElementById(id);
+
+  function playBeep(freq) {
     try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const oscillator = audioCtx.createOscillator();
-      const gainNode = audioCtx.createGain();
-      oscillator.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-      oscillator.type = 'sine';
-      oscillator.frequency.setValueAtTime(1000, audioCtx.currentTime);
-      gainNode.gain.setValueAtTime(0.05, audioCtx.currentTime);
-      oscillator.start();
-      oscillator.stop(audioCtx.currentTime + 0.08);
-    } catch (e) {
-      console.error('Audio error:', e);
-    }
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq || 1000, ctx.currentTime);
+      gain.gain.setValueAtTime(0.05, ctx.currentTime);
+      osc.start(); osc.stop(ctx.currentTime + 0.08);
+    } catch (e) { console.error('Audio error:', e); }
   }
 
+  // カメラ起動
   const constraints = {
-    video: {
-      facingMode: { ideal: 'environment' },
-      width: { ideal: 1280 },
-      height: { ideal: 720 }
-    }
+    video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }
   };
-
   navigator.mediaDevices.getUserMedia(constraints)
     .then(stream => {
-      document.getElementById('video').srcObject = stream;
-      document.getElementById('video').play();
+      $('video').srcObject = stream;
+      $('video').play();
       codeReader.decodeFromStream(stream, 'video', (result, err) => {
-        if (!result) return;
-        if (!scanning) return;
-        
-        scanning = false;
-        sendToGAS(result.getText());
+        if (!result || !scanning) return;
+        scanning = false;            // 自動記録はせず、確認画面へ
+        showConfirm(result.getText());
       });
     })
-    .catch(err => {
-      setStatus('⚠ カメラが使えません: ' + err.message, 'error');
-    });
+    .catch(err => setStatus('⚠ カメラが使えません: ' + err.message, 'error'));
 
-  // 【修正】モダンなFetch APIを使用するように変更（Chrome対策）
-  function sendToGAS(qr) {
-    setStatus('送信中...', '');
+  // ① 読み取り直後：内容を表示して確認を待つ（まだ記録しない）
+  function showConfirm(qr) {
+    pendingQR = qr;
+    playBeep(1200);
+    navigator.vibrate && navigator.vibrate(50);
+    $('video-wrap').classList.add('paused');
 
-    // URLパラメーターにQRデータだけを付与して送信（callbackは使わない）
-    const targetUrl = GAS_URL + '?qr=' + encodeURIComponent(qr);
+    const parts = qr.split('|');
+    if (parts.length < 4 || parts[0] !== 'NV') {
+      $('store-name').textContent = '対象外のQRコード';
+      $('store-info').textContent = '読み取った内容: ' + qr;
+      $('count-info').textContent = '';
+      setStatus('⚠ このQRは記録できません', 'error');
+      showButtons(['rescan']);
+      return;
+    }
+    const [, projectId, storeNo, storeName] = parts;
+    $('store-name').textContent = storeName;
+    $('store-info').textContent = '案件ID: ' + projectId + '　店舗番号: ' + storeNo;
+    $('count-info').textContent = '⚠ まだ記録されていません';
+    setStatus('この内容で記録しますか？', 'confirm');
+    showButtons(['confirm', 'rescan']);
+  }
 
-    fetch(targetUrl)
-      .then(response => {
-        if (!response.ok) {
-          throw new Error('ネットワークエラー');
-        }
-        return response.json(); // GASから返ってくるJSONを解析
-      })
+  // ② 「記録する」ボタン → GASへ送信
+  function recordPending() {
+    if (!pendingQR) return;
+    setStatus('送信中...', 'waiting');
+    showButtons([]);  // 二度押し防止
+
+    fetch(GAS_URL + '?qr=' + encodeURIComponent(pendingQR))
+      .then(res => { if (!res.ok) throw new Error('ネットワークエラー'); return res.json(); })
       .then(data => {
         if (data.ok) {
-          document.getElementById('store-name').textContent = data.storeName;
-          document.getElementById('store-info').textContent = '案件ID: ' + data.projectId + ' 店舗番号: ' + data.storeNo;
-          document.getElementById('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
+          $('store-name').textContent = data.storeName;
+          $('store-info').textContent = '案件ID: ' + data.projectId + '　店舗番号: ' + data.storeNo;
+          $('count-info').textContent = 'この店舗の累計: ' + data.count + ' 個';
           setStatus('✓ 記録しました（' + data.timestamp + '）', 'ok');
-          
-          playBeep();
+          playBeep(880);
           navigator.vibrate && navigator.vibrate(80);
+          showButtons(['next']);
         } else {
           setStatus('⚠ エラー: ' + data.error, 'error');
+          showButtons(['retry', 'rescan']);
         }
-        document.getElementById('next-btn').style.display = 'block';
       })
-      .catch(error => {
-        console.error('通信エラー詳細:', error);
-        setStatus('⚠ 通信エラー。ネットを確認してください。', 'error');
-        document.getElementById('next-btn').style.display = 'block';
+      .catch(err => {
+        console.error('通信エラー詳細:', err);
+        setStatus('⚠ 通信エラー。もう一度送信してください。', 'error');
+        showButtons(['retry', 'rescan']);  // まだ記録されていないので再送信できる
       });
   }
 
-  document.getElementById('next-btn').onclick = function() {
-    this.style.display = 'none';
-    
-    document.getElementById('store-name').textContent = '—';
-    document.getElementById('store-info').textContent = 'QRコードをかざしてください';
-    document.getElementById('count-info').textContent = '';
+  // ③ 次のスキャンへ戻る
+  function resetToScan() {
+    pendingQR = null;
+    $('store-name').textContent = '—';
+    $('store-info').textContent = 'QRコードをかざしてください';
+    $('count-info').textContent = '';
     setStatus('待機中...', 'waiting');
-    
+    $('video-wrap').classList.remove('paused');
+    showButtons([]);
     scanning = true;
-  };
+  }
+
+  // ボタンの表示切替
+  function showButtons(list) {
+    ['confirm-btn','retry-btn','rescan-btn','next-btn'].forEach(id => $(id).classList.add('hidden'));
+    if (list.includes('confirm')) $('confirm-btn').classList.remove('hidden');
+    if (list.includes('retry'))   $('retry-btn').classList.remove('hidden');
+    if (list.includes('rescan'))  $('rescan-btn').classList.remove('hidden');
+    if (list.includes('next'))    $('next-btn').classList.remove('hidden');
+  }
 
   function setStatus(msg, type) {
-    const el = document.getElementById('status');
+    const el = $('status');
     el.textContent = msg;
     el.className = 'status-' + (type || 'waiting');
   }
+
+  // ボタンのイベント登録
+  $('confirm-btn').onclick = recordPending;
+  $('retry-btn').onclick   = recordPending;
+  $('rescan-btn').onclick  = resetToScan;
+  $('next-btn').onclick     = resetToScan;
 </script>
 </body>
 </html>
